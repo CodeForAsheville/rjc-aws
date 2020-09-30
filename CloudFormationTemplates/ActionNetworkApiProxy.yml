@@ -295,6 +295,8 @@ Resources:
          Enabled: true
          StageKeys:
             - RestApiId: !Ref Api
+              StageName: !Ref ApiStagingStage
+            - RestApiId: !Ref Api
               StageName: !Ref ApiProdStage
    ApiUsageKeySophia:
       Type: 'AWS::ApiGateway::UsagePlanKey'
@@ -309,6 +311,8 @@ Resources:
          Description: Action Network API proxy access for David Cohen (Code for Asheville)
          Enabled: true
          StageKeys:
+            - RestApiId: !Ref Api
+              StageName: !Ref ApiStagingStage
             - RestApiId: !Ref Api
               StageName: !Ref ApiProdStage
    ApiUsageKeyDavid:
