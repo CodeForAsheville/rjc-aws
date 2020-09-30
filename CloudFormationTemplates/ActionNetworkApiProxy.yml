@@ -1,0 +1,343 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Proxy API for Action Network and related resources; used to give each contributor their own API key, limit requests to GET and redact some personally-identifiable information.
+Resources:
+   KmsKey:
+      Type: 'AWS::KMS::Key'
+      Properties:
+         Description: Used to encrypt and decrypt the Action Network API key in a Lambda authorizer for API Gateway.
+         Enabled: true
+         PendingWindowInDays: 7
+         KeyPolicy:
+            Version: 2012-10-17
+            Statement:
+               - Effect: Allow
+                 Principal:
+                    Service:
+                       - lambda.amazonaws.com
+                 Action:
+                    - 'kms:Decrypt'
+                 Resource: '*'
+               - Effect: Allow
+                 Principal:
+                    AWS:
+                       - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+                       - !Sub 'arn:aws:iam::${AWS::AccountId}:role/delegate-user-jay'
+                 Action: 'kms:*'
+                 Resource: '*'
+   KmsAlias:
+      Type: 'AWS::KMS::Alias'
+      Properties:
+         AliasName: alias/action-network-api-lambda-key
+         TargetKeyId: !Ref KmsKey
+   IamLambdaRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+         RoleName: action-network-lambda-authorizer
+         Description: Execution role for the Lambda authorizer that decrypts and supplies the Action Network API key.
+         AssumeRolePolicyDocument:
+            Version: 2012-10-17
+            Statement:
+               - Effect: Allow
+                 Principal:
+                    Service:
+                       - lambda.amazonaws.com
+                 Action:
+                    - 'sts:AssumeRole'
+         ManagedPolicyArns:
+            - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+   IamAuthorizerInvocationPolicy:
+      Type: 'AWS::IAM::ManagedPolicy'
+      DependsOn:
+         - LambdaAuthorizer
+      Properties:
+         ManagedPolicyName: action-network-invoke-authorizer
+         PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+               - Effect: Allow
+                 Action:
+                    - 'lambda:InvokeFunction'
+                 Resource: !GetAtt LambdaAuthorizer.Arn
+   IamAuthorizerInvocationRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+         RoleName: action-network-authorizer-invocation
+         Description: Role for API Gateway to use when invoking the Lambda authorizer.
+         AssumeRolePolicyDocument:
+            Version: 2012-10-17
+            Statement:
+               - Effect: Allow
+                 Principal:
+                    Service:
+                       - apigateway.amazonaws.com
+                 Action:
+                    - 'sts:AssumeRole'
+         ManagedPolicyArns:
+            - !Ref IamAuthorizerInvocationPolicy
+   Authorizer:
+      Type: 'AWS::ApiGateway::Authorizer'
+      Properties:
+         Name: LambdaKeyProvider
+         RestApiId: !Ref Api
+         Type: TOKEN
+         AuthorizerCredentials: !GetAtt IamAuthorizerInvocationRole.Arn
+         IdentitySource: method.request.header.x-api-key
+         AuthorizerUri: !Sub
+            - 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaName}/invocations'
+            - LambdaName: !Ref LambdaAuthorizer
+   IamDecryptPolicy:
+      Type: 'AWS::IAM::ManagedPolicy'
+      DependsOn:
+         - KmsKey
+         - IamLambdaRole
+      Properties:
+         ManagedPolicyName: action-network-decrypt
+         PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+               - Effect: Allow
+                 Action:
+                    - 'kms:Decrypt'
+                 Resource: !GetAtt KmsKey.Arn
+         Roles:
+            - !Ref IamLambdaRole
+   LambdaAuthorizer:
+      Type: 'AWS::Lambda::Function'
+      DependsOn:
+         - KmsKey
+         - IamLambdaRole
+      Properties:
+         FunctionName: ActionNetworkAuthorizer
+         Description: Authorizer for Action Network API Gateway that decrypts and supplies the Action Network API key.
+         KmsKeyArn: !GetAtt KmsKey.Arn
+         Role: !GetAtt IamLambdaRole.Arn
+         Handler: index.handler
+         Runtime: nodejs12.x
+         Environment:
+            Variables:
+               ACTION_NETWORK_API_KEY: 'AQICAHhQEaSuzQxT3KR0dzARp+froElcQ9wli1fpWqsqGYa/DwHUq8Jwc8YIGx4IetDXN6pXAAAAfjB8BgkqhkiG9w0BBwagbzBtAgEAMGgGCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMS0KQXpDnPiXV8MevAgEQgDs8GPTVaEu5zLMrjm8OHYdK4C9xjQlVF4OuYd4tE2WBfJ4Trjr23S4JO0uwMjLMhSMv95kFPHvnjixs5A=='
+         Code:
+            ZipFile: !Sub |
+               const aws = require('aws-sdk');
+               const kms = new aws.KMS();
+               exports.handler = async (event, context, callback) => {
+                  let params = {
+                     CiphertextBlob: Buffer.from(process.env.ACTION_NETWORK_API_KEY, 'base64')
+                  };
+
+                  let secret = null
+                  try {
+                     const decrypted = await kms.decrypt(params).promise();
+                     secret = decrypted.Plaintext.toString('utf-8');
+                  }
+                  catch (exception) {
+                     throw new Error(exception);
+                  }
+
+                  let policy = {
+                     "principalId" : event.authorizationToken,
+                     "policyDocument" : {
+                        "Version" : "2012-10-17",
+                        "Statement" : [
+                           {
+                              "Effect" : "Allow",
+                              "Action" : "execute-api:Invoke",
+                              "Resource" : "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*/*/GET/*"
+                           }
+                        ]
+                     },
+                     "context" : {
+                        "apiKey" : secret
+                     }
+                  }
+
+                  callback(null, policy);
+               }
+   Api:
+      Type: 'AWS::ApiGateway::RestApi'
+      Properties:
+         Name: ActionNetworkProxy
+         Description: Proxy API for Action Network; used to limit access to GET requests and give each contributor their own API key.
+         EndpointConfiguration:
+            Types:
+               - REGIONAL
+         FailOnWarnings: true
+   ApiRootGetMethod:
+      Type: 'AWS::ApiGateway::Method'
+      Properties:
+         RestApiId: !Ref Api
+         ResourceId: !GetAtt Api.RootResourceId
+         ApiKeyRequired: true
+         AuthorizationType: CUSTOM
+         AuthorizerId: !Ref Authorizer
+         HttpMethod: GET
+         Integration:
+            Type: HTTP
+            Uri: 'https://actionnetwork.org/api/v2/'
+            IntegrationHttpMethod: GET
+            RequestParameters:
+               integration.request.header.OSDI-API-Token : context.authorizer.apiKey
+            IntegrationResponses:
+               - StatusCode: 200
+                 ResponseTemplates:
+                    application/json: |
+                       #set($json = $input.body)
+                       $json.replace("https://actionnetwork.org/api/v2/", "https://$context.domainName/$stageVariables.stage/")
+         MethodResponses:
+            - StatusCode: 200
+   ApiProxyResource:
+      Type: 'AWS::ApiGateway::Resource'
+      Properties:
+         RestApiId: !Ref Api
+         ParentId: !GetAtt Api.RootResourceId
+         PathPart: '{params+}'
+   ApiProxyGetMethod:
+      Type: 'AWS::ApiGateway::Method'
+      Properties:
+         RestApiId: !Ref Api
+         ResourceId: !Ref ApiProxyResource
+         ApiKeyRequired: true
+         AuthorizationType: CUSTOM
+         AuthorizerId: !Ref Authorizer
+         HttpMethod: GET
+         RequestParameters:
+            method.request.path.params: true
+         Integration:
+            Type: HTTP
+            Uri: 'https://actionnetwork.org/api/v2/{params}'
+            IntegrationHttpMethod: GET
+            RequestParameters:
+               integration.request.header.OSDI-API-Token : context.authorizer.apiKey
+               integration.request.path.params : method.request.path.params
+            IntegrationResponses:
+               - StatusCode: 200
+                 ResponseTemplates:
+                    application/json: |
+                       #set($json = $input.body)
+                       #set($json = $json.replace("https://actionnetwork.org/api/v2/", "https://$context.domainName/$stageVariables.stage/"))
+                       #set($json = $json.replaceAll("""address""\s*:\s*"".*?@.*?""", """address"": ""***@***.***"""))
+                       #set($json = $json.replaceAll("""given_name""\s*:\s*""(.).*?""", """given_name"": ""$1****"""))
+                       #set($json = $json.replaceAll("""family_name""\s*:\s*""(.).*?""", """family_name"": ""$1****"""))
+                       $json
+         MethodResponses:
+            - StatusCode: 200
+   CloudWatchStagingLogGroup:
+      Type: 'AWS::Logs::LogGroup'
+      Properties:
+         RetentionInDays: 3
+         LogGroupName: !Sub
+            - API-Gateway-Execution-Logs_${ApiId}/staging
+            - ApiId: !Ref Api
+   ApiStagingStage:
+      Type: 'AWS::ApiGateway::Stage'
+      DependsOn:
+         - CloudWatchStagingLogGroup
+      Properties:
+         RestApiId: !Ref Api
+         DeploymentId: !Ref ApiDeployment000
+         StageName: staging
+         Variables:
+            stage: staging
+         MethodSettings:
+            -
+               DataTraceEnabled: false
+               HttpMethod: "*"
+               LoggingLevel: INFO
+               ResourcePath: "/*"
+               MetricsEnabled: false
+   CloudWatchProdLogGroup:
+      Type: 'AWS::Logs::LogGroup'
+      Properties:
+         RetentionInDays: 30
+         LogGroupName: !Sub
+            - API-Gateway-Execution-Logs_${ApiId}/prod
+            - ApiId: !Ref Api
+   ApiProdStage:
+      Type: 'AWS::ApiGateway::Stage'
+      DependsOn:
+         - CloudWatchProdLogGroup
+      Properties:
+         RestApiId: !Ref Api
+         DeploymentId: !Ref ApiDeployment000
+         StageName: prod
+         Variables:
+            stage: prod
+         MethodSettings:
+            -
+               DataTraceEnabled: false
+               HttpMethod: "*"
+               LoggingLevel: INFO
+               ResourcePath: "/*"
+               MetricsEnabled: false
+   ApiDevUsagePlan:
+      Type: 'AWS::ApiGateway::UsagePlan'
+      Properties:
+         UsagePlanName: actionnetwork_dev
+         Description: Reasonable limits for developing against the Action Network API.
+         ApiStages:
+            - ApiId: !Ref Api
+              Stage: !Ref ApiStagingStage
+            - ApiId: !Ref Api
+              Stage: !Ref ApiProdStage
+         Quota:
+            Limit: 2500
+            Period: DAY
+         Throttle:
+            BurstLimit: 25
+            RateLimit: 5 # per second
+   ApiKeySophia:
+      Type: 'AWS::ApiGateway::ApiKey'
+      Properties:
+         Name: actionnetwork-sophia
+         Description: Action Network API proxy access for Sophia Russell (Code for Asheville)
+         Enabled: true
+         StageKeys:
+            - RestApiId: !Ref Api
+              StageName: !Ref ApiProdStage
+   ApiUsageKeySophia:
+      Type: 'AWS::ApiGateway::UsagePlanKey'
+      Properties:
+         KeyId: !Ref ApiKeySophia
+         KeyType: API_KEY
+         UsagePlanId: !Ref ApiDevUsagePlan
+   ApiKeyDavid:
+      Type: 'AWS::ApiGateway::ApiKey'
+      Properties:
+         Name: actionnetwork-david
+         Description: Action Network API proxy access for David Cohen (Code for Asheville)
+         Enabled: true
+         StageKeys:
+            - RestApiId: !Ref Api
+              StageName: !Ref ApiProdStage
+   ApiUsageKeyDavid:
+      Type: 'AWS::ApiGateway::UsagePlanKey'
+      Properties:
+         KeyId: !Ref ApiKeyDavid
+         KeyType: API_KEY
+         UsagePlanId: !Ref ApiDevUsagePlan
+   ApiKeyJay:
+      Type: 'AWS::ApiGateway::ApiKey'
+      Properties:
+         Name: actionnetwork-jay
+         Description: Action Network API proxy access for Jay Hill (Code for Asheville)
+         Enabled: true
+         StageKeys:
+            - RestApiId: !Ref Api
+              StageName: !Ref ApiStagingStage
+            - RestApiId: !Ref Api
+              StageName: !Ref ApiProdStage
+   ApiUsageKeyJay:
+      Type: 'AWS::ApiGateway::UsagePlanKey'
+      Properties:
+         KeyId: !Ref ApiKeyJay
+         KeyType: API_KEY
+         UsagePlanId: !Ref ApiDevUsagePlan
+   ApiDeployment000:
+      Type: 'AWS::ApiGateway::Deployment'
+      DeletionPolicy: Retain
+      DependsOn:
+         - ApiRootGetMethod
+         - ApiProxyGetMethod
+      Properties:
+         RestApiId: !Ref Api
+         Description: Initial deployment upon stack creation
