@@ -216,6 +216,8 @@ Resources:
                        #set($json = $input.body)
                        #set($json = $json.replace("https://actionnetwork.org/api/v2/", "https://$context.domainName/$stageVariables.stage/"))
                        #set($json = $json.replaceAll("""address""\s*:\s*"".*?@.*?""", """address"": ""***@***.***"""))
+                       #set($hashes = '###########')
+                       #set($json = $json.replaceAll("""number""\s*:\s*""\d+""", """number"": ""$hashes"""))
                        #set($json = $json.replaceAll("""given_name""\s*:\s*""(.).*?""", """given_name"": ""$1****"""))
                        #set($json = $json.replaceAll("""family_name""\s*:\s*""(.).*?""", """family_name"": ""$1****"""))
                        $json
@@ -234,7 +236,7 @@ Resources:
          - CloudWatchStagingLogGroup
       Properties:
          RestApiId: !Ref Api
-         DeploymentId: !Ref ApiDeployment000
+         DeploymentId: !Ref ApiDeployment002
          StageName: staging
          Variables:
             stage: staging
@@ -258,7 +260,7 @@ Resources:
          - CloudWatchProdLogGroup
       Properties:
          RestApiId: !Ref Api
-         DeploymentId: !Ref ApiDeployment000
+         DeploymentId: !Ref ApiDeployment002
          StageName: prod
          Variables:
             stage: prod
@@ -341,3 +343,15 @@ Resources:
       Properties:
          RestApiId: !Ref Api
          Description: Initial deployment upon stack creation
+   ApiDeployment001:
+      Type: 'AWS::ApiGateway::Deployment'
+      DeletionPolicy: Retain
+      Properties:
+         RestApiId: !Ref Api
+         Description: Redact phone numbers in Action Network integration responses
+   ApiDeployment002:
+      Type: 'AWS::ApiGateway::Deployment'
+      DeletionPolicy: Retain
+      Properties:
+         RestApiId: !Ref Api
+         Description: Redact phone numbers in Action Network integration responses
