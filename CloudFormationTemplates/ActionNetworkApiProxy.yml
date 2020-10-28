@@ -209,6 +209,11 @@ Resources:
             RequestParameters:
                integration.request.header.OSDI-API-Token : context.authorizer.apiKey
                integration.request.path.params : method.request.path.params
+            RequestTemplates:
+              application/json : |
+                #foreach($param in $input.params().querystring.keySet())
+                  #set($context.requestOverride.querystring[$param] = "$util.escapeJavaScript($input.params().querystring.get($param))")
+                #end
             IntegrationResponses:
                - StatusCode: 200
                  ResponseTemplates:
@@ -236,7 +241,7 @@ Resources:
          - CloudWatchStagingLogGroup
       Properties:
          RestApiId: !Ref Api
-         DeploymentId: !Ref ApiDeployment002
+         DeploymentId: !Ref ApiDeployment003
          StageName: staging
          Variables:
             stage: staging
@@ -260,7 +265,7 @@ Resources:
          - CloudWatchProdLogGroup
       Properties:
          RestApiId: !Ref Api
-         DeploymentId: !Ref ApiDeployment002
+         DeploymentId: !Ref ApiDeployment003
          StageName: prod
          Variables:
             stage: prod
@@ -359,3 +364,11 @@ Resources:
       Properties:
          RestApiId: !Ref Api
          Description: Redact phone numbers in Action Network integration responses
+   ApiDeployment003:
+      Type: 'AWS::ApiGateway::Deployment'
+      DeletionPolicy: Retain
+      DependsOn:
+        - ApiProxyGetMethod
+      Properties:
+         RestApiId: !Ref Api
+         Description: Pass request parameters through to integration via mapping template
