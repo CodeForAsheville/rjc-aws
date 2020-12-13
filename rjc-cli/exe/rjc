@@ -1,0 +1,4 @@
+#!/usr/bin/env ruby
+
+require "rjc_action_network"
+RjcActionNetwork::Cli::App.new.call
