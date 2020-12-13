@@ -60,9 +60,9 @@ class RjcActionNetwork::ActivistCollectionBuilder
       form_submissions = form_submissions.sort_by { |form| form[:title] }
       form_titles.each do |title|
         if form_submissions.find { |form| form[:form_title] == title }[:submitted]
-          row << "submitted"
+          row << 1
         else
-          row << "n/a"
+          row << 0
         end
       end
     end
